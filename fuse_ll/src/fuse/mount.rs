@@ -1,3 +1,35 @@
+#![deny(
+    // The following are allowed by default lints according to
+    // https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
+    anonymous_parameters,
+    bare_trait_objects,
+    box_pointers,
+    elided_lifetimes_in_paths,
+    missing_copy_implementations,
+    missing_debug_implementations,
+    missing_docs,
+    single_use_lifetimes,
+    trivial_casts,
+    trivial_numeric_casts,
+    // unreachable_pub, // This lint conflicts with clippy::redundant_pub_crate
+    unsafe_code,
+    unstable_features,
+    unused_extern_crates,
+    unused_import_braces,
+    unused_qualifications,
+    unused_results,
+    variant_size_differences,
+
+    // Treat warnings as errors
+    // warnings, TODO: treat all wanings as errors
+
+    clippy::all,
+    clippy::restriction,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::cargo
+)]
+
 use log::{debug, error};
 use nix::errno::{self, Errno};
 use nix::fcntl::{self, OFlag};
@@ -12,9 +44,9 @@ use std::path::Path;
 
 use param::*;
 
-pub struct MountOption {
+pub struct FuseMountOption {
     pub name: String,
-    pub parser: fn(&mut FuseMountArgs, &MountOption, &str),
+    pub parser: fn(&mut FuseMountArgs, &FuseMountOption, &str),
     pub regex: Regex,
     #[cfg(target_os = "linux")]
     pub flag: Option<u64>,
@@ -49,7 +81,7 @@ pub fn options_validator(option: String) -> Result<(), String> {
     }
 }
 
-pub fn get_mount_options_map() -> HashMap<String, MountOption> {
+pub fn get_mount_options_map() -> HashMap<String, FuseMountOption> {
     get_mount_options()
         .into_iter()
         .map(|op| (op.name.split('=').collect::<Vec<_>>()[0].to_string(), op))
@@ -65,7 +97,7 @@ mod param {
     pub const MS_NODEV: u64 = 4; // Disallow access to device special files
     pub const MNT_FORCE: i32 = 1; // Force un-mount
 
-    use super::MountOption;
+    use super::FuseMountOption;
     use regex::Regex;
     fn add_option(options: &Option<String>, option: &str) -> Option<String> {
         match options {
@@ -74,19 +106,19 @@ mod param {
         }
     }
 
-    pub fn get_mount_options() -> Vec<MountOption> {
-        fn parse_flag(args: &mut FuseMountArgs, mount_option: &MountOption, _options: &str) {
+    pub fn get_mount_options() -> Vec<Options> {
+        fn parse_flag(args: &mut FuseMountArgs, mount_option: &FuseMountOption, _options: &str) {
             if let Some(flag) = mount_option.flag {
                 args.flags |= flag;
             }
         }
 
-        fn parse_allow_other(args: &mut FuseMountArgs, _mount_option: &MountOption, option: &str) {
+        fn parse_allow_other(args: &mut FuseMountArgs, _mount_option: &FuseMountOption, option: &str) {
             args.allow_other = 1;
             args.kernel_opts = add_option(&args.kernel_opts, option);
         }
 
-        fn parse_fsname(args: &mut FuseMountArgs, _mount_option: &MountOption, option: &str) {
+        fn parse_fsname(args: &mut FuseMountArgs, _mount_option: &FuseMountOption, option: &str) {
             let name = String::from(option.split('=').last().unwrap()); //Safe to use unwrap here, becuase option is always valid.
             args.fsname = Some(name);
             args.fusermount_opts = add_option(&args.fusermount_opts, option);
@@ -97,25 +129,25 @@ mod param {
         let allow_other_regex = Regex::new("^allow_other$").unwrap();
         let fsname_regex = Regex::new(r"^fsname=[^\s]+$").unwrap();
         vec![
-            MountOption {
+            FuseMountOption {
                 name: String::from("ro"),
                 parser: parse_flag,
                 regex: ro_regex,
                 flag: Some(MS_RDONLY),
             },
-            MountOption {
+            FuseMountOption {
                 name: String::from("rw"),
                 parser: parse_flag,
                 regex: rw_regex,
                 flag: None,
             },
-            MountOption {
+            FuseMountOption {
                 name: String::from("allow_other"),
                 parser: parse_allow_other,
                 regex: allow_other_regex,
                 flag: None,
             },
-            MountOption {
+            FuseMountOption {
                 name: String::from("fsname=<name>"),
                 parser: parse_fsname,
                 regex: fsname_regex,
@@ -171,12 +203,12 @@ mod param {
 mod param {
     // https://github.com/apple/darwin-xnu/blob/master/bsd/sys/mount.h#L288
     // TODO: use mount flags from libc
-    pub const MNT_RDONLY: i32 = 0x00000001; // read only filesystem
-    pub const MNT_NOSUID: i32 = 0x00000008; // don't honor setuid bits on fs
-    pub const MNT_NODEV: i32 = 0x00000010; // don't interpret special files
-    pub const MNT_FORCE: i32 = 0x00080000; // force unmount or readonly change
-    pub const MNT_NOUSERXATTR: i32 = 0x01000000; // Don't allow user extended attributes
-    pub const MNT_NOATIME: i32 = 0x10000000; // disable update of file access time
+    pub const MNT_RDONLY: i32 = 0x0000_0001; // read only filesystem
+    pub const MNT_NOSUID: i32 = 0x0000_0008; // don't honor setuid bits on fs
+    pub const MNT_NODEV: i32 = 0x0000_0010; // don't interpret special files
+    pub const MNT_FORCE: i32 = 0x0008_0000; // force unmount or readonly change
+    pub const MNT_NOUSERXATTR: i32 = 0x0100_0000; // Don't allow user extended attributes
+    pub const MNT_NOATIME: i32 = 0x1000_0000; // disable update of file access time
 
     pub const PAGE_SIZE: u32 = 4096;
 
@@ -188,10 +220,18 @@ mod param {
     pub const FUSE_IOC_TYPE_MODE: u8 = 5;
 
     pub const FUSE_FSSUBTYPE_UNKNOWN: u32 = 0;
-    pub const FUSE_MOPT_ALLOW_OTHER: u64 = 0x0000000000000001;
-    pub const FUSE_MOPT_DEBUG: u64 = 0x0000000000000040;
-    pub const FUSE_MOPT_FSNAME: u64 = 0x0000000000001000;
-    pub const FUSE_MOPT_NO_APPLEXATTR: u64 = 0x0000000000800000;
+    
+    #[allow(dead_code)]
+    pub mod fuse_mopt_flags {
+        pub const FUSE_MOPT_ALLOW_OTHER: u64 = 0x0000_0000_0000_0001;
+
+        pub const FUSE_MOPT_DEBUG: u64 = 0x0000_0000_0000_0040;
+
+        pub const FUSE_MOPT_FSNAME: u64 = 0x0000_0000_0000_1000;
+
+        pub const FUSE_MOPT_NO_APPLEXATTR: u64 = 0x0000_0000_0080_0000;
+    }
+    pub use fuse_mopt_flags::*;
 
     use libc::size_t;
     pub const MFSTYPENAMELEN: size_t = 16; // length of fs type name including null
@@ -213,17 +253,17 @@ mod param {
         rdev: u32,                        // dev_t for the /dev/osxfuse{n} in question
     }
 
-    use super::MountOption;
+    use super::FuseMountOption;
     use regex::Regex;
-    pub fn get_mount_options() -> Vec<MountOption> {
-        fn empty_parser(_args: &mut FuseMountArgs, _mount_option: &MountOption, _option: &str) {}
-        fn parse_fuse_flag(args: &mut FuseMountArgs, mount_option: &MountOption, _option: &str) {
+    pub fn get_mount_options() -> Vec<FuseMountOption> {
+        fn empty_parser(_args: &mut FuseMountArgs, _mount_option: &FuseMountOption, _option: &str) {}
+        fn parse_fuse_flag(args: &mut FuseMountArgs, mount_option: &FuseMountOption, _option: &str) {
             if let Some(flag) = mount_option.fuse_flag {
                 args.altflags |= flag;
             }
         }
 
-        fn parse_fsname(args: &mut FuseMountArgs, _mount_option: &MountOption, option: &str) {
+        fn parse_fsname(args: &mut FuseMountArgs, _mount_option: &FuseMountOption, option: &str) {
             let name = String::from(option.split('=').last().unwrap()); //Safe to use unwrap here, becuase option is always valid.
             copy_slice(
                 CString::new(name).expect("CString::new failed!").as_bytes(),
@@ -236,28 +276,28 @@ mod param {
         let allow_other_regex = Regex::new("^allow_other$").unwrap();
         let fsname_regex = Regex::new(r"^fsname=[^\s]+$").unwrap();
         vec![
-            MountOption {
+            FuseMountOption {
                 name: String::from("ro"),
                 parser: empty_parser,
                 regex: ro_regex,
                 flag: Some(MNT_RDONLY),
                 fuse_flag: None,
             },
-            MountOption {
+            FuseMountOption {
                 name: String::from("rw"),
                 parser: empty_parser,
                 regex: rw_regex,
                 flag: None,
                 fuse_flag: None,
             },
-            MountOption {
+            FuseMountOption {
                 name: String::from("allow_other"),
                 parser: parse_fuse_flag,
                 regex: allow_other_regex,
                 flag: None,
                 fuse_flag: Some(FUSE_MOPT_ALLOW_OTHER),
             },
-            MountOption {
+            FuseMountOption {
                 name: String::from("fsname=<name>"),
                 parser: parse_fsname,
                 regex: fsname_regex,
